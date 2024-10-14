@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloud-role-identity-controller
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: cloud-role-identity-controller
+  template:
+    metadata:
+      labels:
+        app: cloud-role-identity-controller
+        app.kubernetes.io/name: {{ .Release.Name }}
+        app.kubernetes.io/managed-by: helm
+    spec:
+      containers:
+        - name: cloud-role-identity-controller
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+      serviceAccountName: cloud-role-identity-controller-service-account
