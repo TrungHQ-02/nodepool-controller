@@ -42,6 +42,7 @@ func NewPodReconciler(mgr ctrl.Manager) (*PodReconciler, error) {
 // listNodePools lists NodePool objects using the dynamic client
 func (r *PodReconciler) listNodePools(ctx context.Context) ([]unstructured.Unstructured, error) {
 	logger := log.FromContext(ctx)
+
 	// Define the GVR for the NodePool CRD
 	gvr := schema.GroupVersionResource{
 		Group:    "karpenter.sh",
@@ -49,13 +50,12 @@ func (r *PodReconciler) listNodePools(ctx context.Context) ([]unstructured.Unstr
 		Resource: "nodepools",
 	}
 
-	// Ensure DynamicClient is initialized
 	if r.DynamicClient == nil {
-		logger.Error(fmt.Errorf("dynamic client is nil"), "Dynamic client is not initialized")
-		return nil, fmt.Errorf("dynamic client is nil")
+		err := fmt.Errorf("dynamic client is nil")
+		logger.Error(err, "Dynamic client is not initialized")
+		return nil, err
 	}
 
-	// List NodePool objects across all namespaces (adjust if NodePool is namespace-scoped)
 	nodePoolsList, err := r.DynamicClient.Resource(gvr).Namespace("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list NodePools: %w", err)
@@ -63,25 +63,83 @@ func (r *PodReconciler) listNodePools(ctx context.Context) ([]unstructured.Unstr
 
 	nodePools := nodePoolsList.Items
 
-	// // Log NodePools and their requirements
-	// for _, nodePool := range nodePools {
-	// 	logger.Info("NodePool found", "name", nodePool.GetName())
-	//
-	// 	// Extract the 'requirements' field
-	// 	requirements, found, err := unstructured.NestedSlice(nodePool.Object, "spec", "template", "spec", "requirements")
-	// 	if err != nil {
-	// 		logger.Error(err, "Error accessing 'requirements' field in NodePool", "name", nodePool.GetName())
-	// 		continue
-	// 	}
-	// 	if !found {
-	// 		logger.Info("'requirements' field not found in NodePool", "name", nodePool.GetName())
-	// 		continue
-	// 	}
-	//
-	// 	logger.Info("NodePool Requirements", "requirements", requirements)
-	// }
-
 	return nodePools, nil
+}
+
+// createNodePool creates a new NodePool with the specified taint value
+func (r *PodReconciler) createNodePool(ctx context.Context, provisionForTeamValue string) error {
+	logger := log.FromContext(ctx)
+
+	// Define the GVR for the NodePool CRD
+	gvr := schema.GroupVersionResource{
+		Group:    "karpenter.sh",
+		Version:  "v1",
+		Resource: "nodepools",
+	}
+
+	// Define the NodePool name
+	nodePoolName := fmt.Sprintf("nodepool-%s", provisionForTeamValue)
+
+	// Define the NodePool object
+	nodePool := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "karpenter.sh/v1",
+			"kind":       "NodePool",
+			"metadata": map[string]interface{}{
+				"name": nodePoolName,
+			},
+			"spec": map[string]interface{}{
+				// Define the necessary spec fields based on your requirements
+				"limits": map[string]interface{}{
+					"cpu":    "12000m",
+					"memory": "64Gi",
+				},
+				"template": map[string]interface{}{
+					"spec": map[string]interface{}{
+						"taints": []interface{}{
+							map[string]interface{}{
+								"key":    "provision-for-team",
+								"value":  provisionForTeamValue,
+								"effect": "NoSchedule",
+							},
+						},
+						"nodeClassRef": map[string]interface{}{
+							"group": "karpenter.k8s.aws",
+							"kind":  "EC2NodeClass",
+							"name":  "custom",
+						},
+						"requirements": []interface{}{
+							map[string]interface{}{
+								"key":      "karpenter.sh/capacity-type",
+								"operator": "In",
+								"values":   []interface{}{"spot"},
+							},
+						},
+						"expireAfter": "24h",
+					},
+				},
+				"disruption": map[string]interface{}{
+					"budgets": []interface{}{
+						map[string]interface{}{
+							"nodes": "10%",
+						},
+					},
+					"consolidateAfter":    "10m",
+					"consolidationPolicy": "WhenEmpty",
+				},
+			},
+		},
+	}
+
+	// Create the NodePool
+	_, err := r.DynamicClient.Resource(gvr).Namespace("").Create(ctx, nodePool, metav1.CreateOptions{})
+	if err != nil {
+		logger.Error(err, "Failed to create NodePool", "name", nodePoolName)
+		return fmt.Errorf("failed to create NodePool: %w", err)
+	}
+
+	logger.Info("Successfully created NodePool", "name", nodePoolName)
+	return nil
 }
 
 // Reconcile is part of the main Kubernetes reconciliation loop
@@ -93,11 +151,9 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	err := r.Get(ctx, req.NamespacedName, pod)
 	if err != nil {
 		if client.IgnoreNotFound(err) == nil {
-			// Pod not found. It might have been deleted after the reconcile request.
 			logger.Info("Pod not found. Ignoring since object must be deleted.", "pod", req.NamespacedName)
 			return ctrl.Result{}, nil
 		}
-		// Error reading the object - requeue the request.
 		logger.Error(err, "Failed to get Pod", "pod", req.NamespacedName)
 		return ctrl.Result{}, err
 	}
@@ -106,14 +162,16 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	if pod.Status.Phase == corev1.PodPending {
 		logger.Info("Pod is pending", "pod", req.NamespacedName)
 
-		// Log NodeSelectors and prepare for matching
+		// Retrieve the nodeSelector map from the Pod spec
 		nodeSelector := pod.Spec.NodeSelector
-		if nodeSelector != nil {
-			for key, value := range nodeSelector {
-				logger.Info("NodeSelector", "key", key, "value", value)
-			}
+
+		// Look for the 'provision-for-team' key
+		provisionForTeamValue, exists := nodeSelector["provision-for-team"]
+		if exists {
+			logger.Info("Found NodeSelector 'provision-for-team'", "value", provisionForTeamValue)
 		} else {
-			logger.Info("No NodeSelector defined for this pod", "pod", req.NamespacedName)
+			logger.Info("'provision-for-team' key not found in NodeSelector")
+			return ctrl.Result{}, nil
 		}
 
 		// List NodePools
@@ -123,66 +181,65 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			return ctrl.Result{}, err
 		}
 
-		// Iterate over NodeSelectors and find matching NodePools
-		if nodeSelector != nil {
-			for nodeSelectorkey, nodeSelectorValue := range nodeSelector {
-				found := false
-				for _, nodePool := range nodePools {
-					// Extract 'taints' field from NodePool
-					taints, foundTaints, err := unstructured.NestedSlice(nodePool.Object, "spec", "template", "spec", "taints")
-					if err != nil {
-						logger.Error(err, "Error accessing 'taints' field in NodePool", "name", nodePool.GetName())
-						continue
-					}
-					if !foundTaints {
-						logger.Info("'taints' field not found in NodePool", "name", nodePool.GetName())
-						continue
-					}
+		// Flag to indicate if a matching NodePool was found
+		matchingNodePoolFound := false
 
-					// Iterate over taints to find a match
-					for _, taint := range taints {
-						taintMap, ok := taint.(map[string]interface{})
-						if !ok {
-							logger.Error(fmt.Errorf("taint is not a map"), "Invalid taint format in NodePool", "name", nodePool.GetName())
-							continue
-						}
+		// Iterate over NodePools to find a match based on taints
+		for _, nodePool := range nodePools {
+			taints, foundTaints, err := unstructured.NestedSlice(nodePool.Object, "spec", "template", "spec", "taints")
+			if err != nil {
+				logger.Error(err, "Error accessing 'taints' field in NodePool", "name", nodePool.GetName())
+				continue
+			}
+			if !foundTaints {
+				logger.Info("'taints' field not found in NodePool", "name", nodePool.GetName())
+				continue
+			}
 
-						taintKey, foundKey, err := unstructured.NestedString(taintMap, "key")
-						if err != nil || !foundKey {
-							logger.Error(err, "Error accessing 'key' in taint", "name", nodePool.GetName())
-							continue
-						}
-
-						taintValue, foundValue, err := unstructured.NestedString(taintMap, "value")
-						if err != nil || !foundValue {
-							logger.Error(err, "Error accessing 'value' in taint", "name", nodePool.GetName())
-							continue
-						}
-
-						// Check if taint key and value match the node selector
-						if taintKey == nodeSelectorkey && taintValue == nodeSelectorValue {
-							logger.Info("Matching NodePool found", "NodePool", nodePool.GetName())
-							found = true
-							break
-						}
-					}
-
-					if found {
-						break // Stop searching other NodePools once a match is found for this key-value
-					}
+			for _, taint := range taints {
+				taintMap, ok := taint.(map[string]interface{})
+				if !ok {
+					logger.Error(fmt.Errorf("taint is not a map"), "Invalid taint format in NodePool", "name", nodePool.GetName())
+					continue
 				}
 
-				if !found {
-					logger.Info("Cannot find a NodePool matching the NodeSelector")
+				taintValue, foundValue, err := unstructured.NestedString(taintMap, "value")
+				if err != nil || !foundValue {
+					logger.Error(err, "Error accessing 'value' in taint", "name", nodePool.GetName())
+					continue
 				}
+
+				logger.Info("Taint Value", "value", taintValue)
+
+				if taintValue == provisionForTeamValue {
+					logger.Info("Matching NodePool found", "NodePool", nodePool.GetName())
+					matchingNodePoolFound = true
+					break
+				}
+			}
+
+			if matchingNodePoolFound {
+				break
 			}
 		}
 
+		if !matchingNodePoolFound {
+			logger.Info("Cannot find a NodePool matching the NodeSelector 'provision-for-team'", "value", provisionForTeamValue)
+			logger.Info("Creating a new NodePool")
+			err := r.createNodePool(ctx, provisionForTeamValue)
+			if err != nil {
+				logger.Error(err, "Failed to create NodePool")
+				return ctrl.Result{}, err
+			}
+
+			// Optionally, you might want to requeue immediately to verify the NodePool creation
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+
 		// Example: Requeue after 1 minute to re-evaluate the Pod's status
-		return ctrl.Result{RequeueAfter: time.Minute}, nil
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// If Pod is not pending, no action is required
 	return ctrl.Result{}, nil
 }
 

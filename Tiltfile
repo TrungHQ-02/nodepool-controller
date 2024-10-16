@@ -5,7 +5,7 @@ compile_cmd = 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/nodepool-
 local_resource(
   'nodepool-controller-compile',
   compile_cmd,
-  deps=['./main.go', './controller/nodepool-controller.go '],
+  deps=['./main.go' ],
 )
  
 docker_build_with_restart(
