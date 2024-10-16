@@ -173,7 +173,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 				}
 
 				if !found {
-					logger.Info("Cannot find a NodePool matching the NodeSelector", "key", key, "value", value)
+					logger.Info("Cannot find a NodePool matching the NodeSelector")
 				}
 			}
 		}
