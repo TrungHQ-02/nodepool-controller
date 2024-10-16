@@ -1,30 +1,55 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cloud-role-identity-controller
-  namespace: role-controller
+  name: nodepool-controller
+  namespace: karpenter
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: cloud-role-identity-controller
+      app: nodepool-controller
   template:
     metadata:
       labels:
-        app: cloud-role-identity-controller
+        app: nodepool-controller
     spec:
       containers:
-        - name: cloud-role-identity-controller
-          image: k3d-localregistry.localhost:12345/cloud-role-identity-image
-      serviceAccountName: cloud-role-identity-controller-service-account
+        - name: nodepoolcontroller
+          image: k3d-localregistry.localhost:12345/nodepool-controller-image
+      serviceAccountName: nodepool-controller-service-account
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: cloud-role-identity-controller-service-account
-  namespace: role-controller
+  name: nodepool-controller-service-account
+  namespace: karpenter
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: role-controller
+  name: karpenter
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pod-list
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "get", "watch"]
+  - apiGroups: ["karpenter.sh"]
+    resources: ["nodepools"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodepool-controller-service-account-pod-list
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pod-list
+subjects:
+  - kind: ServiceAccount
+    name: nodepool-controller-service-account
+    namespace: karpenter

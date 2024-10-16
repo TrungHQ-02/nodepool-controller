@@ -1,4 +1,4 @@
-module github.com/TranThang-2804/k8s-pod-identity-controller
+module github.com/TrungHQ-02/nodepool-controller
 
 go 1.22.3
 
