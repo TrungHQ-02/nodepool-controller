@@ -114,6 +114,10 @@ func (r *PodReconciler) createNodePool(ctx context.Context, provisionForTeamValu
 						},
 						"requirements": []interface{}{
 							map[string]interface{}{
+								"key":      "provision-for-team",
+								"operator": "Exists",
+							},
+							map[string]interface{}{
 								"key":      "karpenter.sh/capacity-type",
 								"operator": "In",
 								"values":   []interface{}{"spot"},

@@ -45,11 +45,7 @@ func main() {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		LeaderElection:   enableLeaderElection,
 		LeaderElectionID: "ce329a9c.core.oam.dev",
-		// MetricsBindAddress: metricsAddr,
-		// Namespace:          namespace,
-		// Port:               9443,
-		Scheme: scheme,
-		// SyncPeriod:         &syncPeriod,
+		Scheme:           scheme,
 	})
 
 	if err != nil {
